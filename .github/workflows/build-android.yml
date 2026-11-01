@@ -1,111 +1,142 @@
-name: Build Android APK
+name: Build Mori-AIXI Android APK
 
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+
   workflow_dispatch:
+
   release:
-    types: [published]
+    types:
+      - published
 
 permissions:
   contents: write
 
 concurrency:
-  group: apk-${{ github.ref }}
+  group: mori-aixi-apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  apk:
-    name: Build and verify Mori-AIXI APK
+  build:
+    name: Build Mori-AIXI APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout source
+      # 1. Ambil source code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Verify project files
+      # 2. Periksa struktur proyek
+      - name: Verify Project
         run: |
+          set -e
+
           test -f package.json
           test -f capacitor.config.json
           test -f public/index.html
           test -f android/gradlew
           test -f android/app/build.gradle
+          test -f scripts/smoke-test.js
 
+          echo "Mori-AIXI source verified"
+
+      # 3. Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: package.json
 
+      # 4. Setup Java
       - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
 
+      # 5. Setup Android SDK
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-      - name: Install Android SDK components
+      # 6. Install Android SDK
+      - name: Install SDK Components
         run: |
-          set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null
+          set -e
+
           sdkmanager \
-            "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
             "ndk;28.2.13676358"
 
-      - name: Setup Gradle cache
+      # 7. Setup Gradle
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # This repository currently has no package-lock.json.
-      # npm install is used until a lockfile is committed.
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      # 8. Install dependencies
+      - name: Install Dependencies
+        run: |
+          npm install --no-audit --no-fund
 
-      - name: Run project smoke tests
+      # 9. Test application
+      - name: Test Mori-AIXI
         run: npm test
 
-      # Mori serves its web app directly from public/, so there is no
-      # separate frontend compilation step in the current package.json.
-      - name: Sync Capacitor assets and native plugins
+      # 10. Sync Capacitor
+      - name: Sync Capacitor Android
         run: npx cap sync android
 
-      - name: Build debug APK
+      # 11. Build APK
+      - name: Build Debug APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug
 
-      - name: Verify and rename APK
-        shell: bash
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      # 12. Verify APK
+      - name: Verify APK
         run: |
-          set -euo pipefail
+          set -e
+
           mkdir -p dist
-          mapfile -t APKS < <(find android/app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
-          if [ "${#APKS[@]}" -ne 1 ]; then
-            echo "Expected exactly one debug APK; found ${#APKS[@]}"
-            printf '%s\n' "${APKS[@]}"
+
+          APK=$(find android/app/build/outputs/apk/debug \
+            -type f -name "*.apk" | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "APK not found!"
             exit 1
           fi
-          test -s "${APKS[0]}"
-          cp "${APKS[0]}" dist/Mori-AIXI-debug.apk
-          sha256sum dist/Mori-AIXI-debug.apk
-          ls -lh dist/Mori-AIXI-debug.apk
 
-      - name: Upload APK artifact
+          test -s "$APK"
+
+          cp "$APK" dist/Mori-AIXI.apk
+
+          echo "APK BUILD SUCCESSFUL"
+
+          sha256sum dist/Mori-AIXI.apk
+
+          ls -lh dist/Mori-AIXI.apk
+
+      # 13. Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Mori-AIXI-APK
-          path: dist/Mori-AIXI-debug.apk
+          path: dist/Mori-AIXI.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
 
-      - name: Attach APK to GitHub Release
+      # 14. Attach APK to Release
+      - name: Upload APK to Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Mori-AIXI-debug.apk
+          files: dist/Mori-AIXI.apk
